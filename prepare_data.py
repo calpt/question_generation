@@ -4,7 +4,8 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
 import torch
-import nlp
+import datasets
+from datasets import load_dataset
 from transformers import T5Tokenizer, BartTokenizer, HfArgumentParser
 
 
@@ -48,6 +49,7 @@ class DataTrainingArguments:
         default=32,
         metadata={"help": "Max input length for the target text"},
     )
+
 
 class DataProcessor:
     def __init__(self, tokenizer, model_type="t5", max_source_length=512, max_target_length=32):
@@ -146,14 +148,14 @@ def main():
     )
 
     if data_args.model_type == 't5':
-        tokenizer = T5Tokenizer.from_pretrained("t5-base")
+        tokenizer = T5Tokenizer.from_pretrained("t5-base", use_fast=False)
     else:
-        tokenizer = T5Tokenizer.from_pretrained("bart-base")
+        tokenizer = BartTokenizer.from_pretrained("facebook/bart-base", use_fast=False)
     
     tokenizer.add_tokens(['<sep>', '<hl>'])
     
-    train_dataset = nlp.load_dataset(data_args.dataset_path, name=data_args.qg_format, split=nlp.Split.TRAIN)
-    valid_dataset = nlp.load_dataset(data_args.dataset_path, name=data_args.qg_format, split=nlp.Split.VALIDATION)
+    train_dataset = load_dataset(data_args.dataset_path, name=data_args.qg_format, split=datasets.Split.TRAIN)
+    valid_dataset = load_dataset(data_args.dataset_path, name=data_args.qg_format, split=datasets.Split.VALIDATION)
 
     processor = DataProcessor(
         tokenizer,

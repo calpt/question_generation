@@ -133,7 +133,7 @@ The [nlg-eval](https://github.com/Maluuba/nlg-eval) package is used for calculat
 ```
 transformers==3.0.0
 nltk
-nlp==0.2.0 # only if you want to fine-tune.
+datasets # only if you want to fine-tune.
 ```
 
 after installing `nltk` do
