@@ -15,8 +15,11 @@ from transformers import (
     T5Tokenizer,
     BartTokenizer,
     HfArgumentParser,
+    AdapterType,
     DataCollator,
+    AdapterConfig,
     TrainingArguments,
+    AdapterArguments,
     set_seed,
 )
 
@@ -74,7 +77,7 @@ class DataTrainingArguments:
         metadata={"help": "Path for data files"}, 
     )
     task: Optional[str] = field(
-        default=None,
+        default="qg",
         metadata={"help": "Which task 'qa', 'qg', 'e2e_qg', 'ans_ext', 'multi'. 'multi' means 'qa', 'qg', 'ans_ext' tasks"}, 
     )
     qg_format: Optional[str] = field(
@@ -96,15 +99,15 @@ def main(args_file=None):
     # or by passing the --help flag to this script.
     # We now keep distinct sets of args, for a cleaner separation of concerns.
 
-    parser = HfArgumentParser((ModelArguments, DataTrainingArguments, TrainingArguments))
+    parser = HfArgumentParser((ModelArguments, DataTrainingArguments, TrainingArguments, AdapterArguments))
 
     if (len(sys.argv) == 2 and sys.argv[1].endswith(".json")) or args_file is not None:
         # If we pass only one argument to the script and it's the path to a json file,
         # let's parse it to get our arguments.
         args_file_path = os.path.abspath(sys.argv[1]) if args_file is None else args_file
-        model_args, data_args, training_args = parser.parse_json_file(json_file=args_file_path)
+        model_args, data_args, training_args, adapter_args = parser.parse_json_file(json_file=args_file_path)
     else:
-        model_args, data_args, training_args = parser.parse_args_into_dataclasses()
+        model_args, data_args, training_args, adapter_args = parser.parse_args_into_dataclasses()
 
     assert model_args.model_type in list(MODEL_TYPE_TO_TOKENIZER.keys()), "model type should be 't5' or 'bart'"
 
@@ -162,6 +165,33 @@ def main(args_file=None):
         freeze_embeds(model)
         assert_not_all_frozen(model)
 
+    # Setup adapters
+    if adapter_args.train_adapter:
+        task_name = data_args.task
+        # check if adapter already exists, otherwise add it
+        if task_name not in model.config.adapters:
+            # resolve the adapter config
+            adapter_config = AdapterConfig.load(
+                adapter_args.adapter_config,
+                non_linearity=adapter_args.adapter_non_linearity,
+                reduction_factor=adapter_args.adapter_reduction_factor,
+            )
+            # load a pre-trained from Hub if specified
+            if adapter_args.load_adapter:
+                model.load_adapter(
+                    adapter_args.load_adapter,
+                    AdapterType.text_task,
+                    config=adapter_config,
+                    load_as=task_name,
+                )
+            # otherwise, add a fresh adapter
+            else:
+                model.add_adapter(task_name, config=adapter_config)
+        # Freeze all model weights except of those of this adapter
+        model.train_adapter([task_name])
+        # Set the adapters to be used in every forward pass
+        model.set_active_adapters([task_name])
+
     # Get datasets
     logger.info('loading dataset')
     
@@ -178,6 +208,10 @@ def main(args_file=None):
         using_tpu=training_args.tpu_num_cores is not None
     )
 
+    # HACK: Columns of the dataset don't match input parameters of model directly, disable removal
+    training_args.remove_unused_columns = False
+    training_args.prediction_loss_only = True
+
     # Initialize our Trainer
     trainer = Trainer(
         model=model,
@@ -185,8 +219,9 @@ def main(args_file=None):
         train_dataset=train_dataset,
         eval_dataset=valid_dataset,
         data_collator=data_collator,
-        prediction_loss_only=True,
-        label_smoothing=model_args.label_smoothing
+        label_smoothing=model_args.label_smoothing,
+        do_save_full_model=not adapter_args.train_adapter,
+        do_save_adapters=adapter_args.train_adapter,
     )
 
     # disable wandb console logs
