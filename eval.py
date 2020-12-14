@@ -4,13 +4,20 @@ from typing import Optional
 
 import torch
 from tqdm.auto import tqdm
-from transformers import AutoModelForSeq2SeqLM, AutoTokenizer, HfArgumentParser
+from transformers import AutoModelForSeq2SeqLM, HfArgumentParser, T5Tokenizer, BartTokenizer
 
 from data_collator import T2TDataCollator
+
+
+MODEL_TYPE_TO_TOKENIZER = {
+    "t5": T5Tokenizer,
+    "bart": BartTokenizer,
+}
 
 device = 'cuda' if torch.cuda.is_available else 'cpu'
 
 logger = logging.getLogger(__name__)
+
 
 @dataclass
 class EvalArguments:
@@ -23,6 +30,10 @@ class EvalArguments:
     model_type: str = field(metadata={"help": "One of 't5', 'bart'"})
     tokenizer_name_or_path: Optional[str] = field(
         default=None, metadata={"help": "Pretrained tokenizer name or path if not the same as model_name"}
+    )
+    load_adapter: str = field(
+        default=None,
+        metadata={"help": "Path to a pre-trained adapter to be loaded."}
     )
     num_beams: Optional[int] = field(
         default=4,
@@ -37,15 +48,16 @@ class EvalArguments:
         metadata={"help": "path to save the generated questions."}
     )
 
+
 def get_predictions(model, tokenizer, data_loader, num_beams=4, max_length=32, length_penalty=1):
     model.to(device)
-    
+
     predictions = []
     model.eval()
     with torch.no_grad():
         for batch in tqdm(data_loader):
             outs = model.generate(
-                input_ids=batch['input_ids'].to(device), 
+                input_ids=batch['input_ids'].to(device),
                 attention_mask=batch['attention_mask'].to(device),
                 num_beams=num_beams,
                 max_length=max_length,
@@ -57,14 +69,21 @@ def get_predictions(model, tokenizer, data_loader, num_beams=4, max_length=32, l
 
     return predictions
 
+
 def main():
     parser = HfArgumentParser((EvalArguments,))
     args = parser.parse_args_into_dataclasses()[0]
 
-    tokenizer = AutoTokenizer.from_pretrained(
+    tokenizer_cls = MODEL_TYPE_TO_TOKENIZER[args.model_type]
+    tokenizer = tokenizer_cls.from_pretrained(
         args.tokenizer_name_or_path if args.tokenizer_name_or_path else args.model_name_or_path,
     )
     model = AutoModelForSeq2SeqLM.from_pretrained(args.model_name_or_path)
+    model.resize_token_embeddings(len(tokenizer))
+
+    if args.load_adapter:
+        adapter_name = model.load_adapter(args.load_adapter)
+        model.set_active_adapters([adapter_name])
 
     valid_dataset = torch.load(args.valid_file_path)
     collator = T2TDataCollator(
@@ -84,7 +103,7 @@ def main():
 
     with open(args.output_path, 'w') as f:
         f.write("\n".join(predictions))
-    
+
     logging.info(f"Output saved at {args.output_path}")
 
 
